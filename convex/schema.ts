@@ -20,9 +20,6 @@ export default defineSchema({
     githubUsername: v.optional(v.string()),
     githubConnectedAt: v.optional(v.number()),
 
-    // LLM keys (stored on server only, never persisted here in plain text)
-    // We pass these during provisioning and inject as env vars on the VM
-
     plan: v.union(v.literal("free"), v.literal("pro")),
     createdAt: v.number(),
   })

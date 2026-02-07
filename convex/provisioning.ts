@@ -12,27 +12,10 @@ export const provisionServer = action({
     region: v.union(v.literal("ash"), v.literal("hil"), v.literal("nbg1"), v.literal("fsn1"), v.literal("hel1")),
     serverType: v.union(v.literal("cx23"), v.literal("cx33"), v.literal("cpx21"), v.literal("cpx31")),
     agents: v.array(v.union(v.literal("opencode"), v.literal("claude-code"))),
-    anthropicApiKey: v.optional(v.string()),
-    openaiApiKey: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) throw new Error("Not authenticated");
-
-    // Validate LLM API key format (alphanumeric, hyphens, underscores, dots only)
-    const apiKeyPattern = /^[a-zA-Z0-9_\-.:]+$/;
-    if (args.anthropicApiKey && !apiKeyPattern.test(args.anthropicApiKey)) {
-      throw new Error("Invalid Anthropic API key format");
-    }
-    if (args.openaiApiKey && !apiKeyPattern.test(args.openaiApiKey)) {
-      throw new Error("Invalid OpenAI API key format");
-    }
-    if (args.anthropicApiKey && args.anthropicApiKey.length > 256) {
-      throw new Error("Anthropic API key too long");
-    }
-    if (args.openaiApiKey && args.openaiApiKey.length > 256) {
-      throw new Error("OpenAI API key too long");
-    }
 
     // 1. Get user and their API keys (encrypted at rest)
     const user = await ctx.runQuery(api.users.getCurrent);
@@ -95,8 +78,6 @@ export const provisionServer = action({
         tailscaleAuthKey,
         agents: args.agents,
         serverPassword,
-        anthropicApiKey: args.anthropicApiKey,
-        openaiApiKey: args.openaiApiKey,
         opencodePort: 4096,
         claudeCodePort: 4097,
         githubToken,
@@ -549,8 +530,6 @@ function generateSetupScript(config: {
   tailscaleAuthKey: string;
   agents: string[];
   serverPassword: string;
-  anthropicApiKey?: string;
-  openaiApiKey?: string;
   opencodePort: number;
   claudeCodePort: number;
   githubToken?: string;
@@ -560,8 +539,6 @@ function generateSetupScript(config: {
     `OPENCODE_SERVER_USERNAME=sshcode`,
     `OPENCODE_SERVER_PASSWORD=${config.serverPassword}`,
   ];
-  if (config.anthropicApiKey) envLines.push(`ANTHROPIC_API_KEY=${config.anthropicApiKey}`);
-  if (config.openaiApiKey) envLines.push(`OPENAI_API_KEY=${config.openaiApiKey}`);
   if (config.githubToken) envLines.push(`GITHUB_TOKEN=${config.githubToken}`);
 
   const envFileB64 = toBase64(envLines.join("\n") + "\n");

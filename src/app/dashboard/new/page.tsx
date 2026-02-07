@@ -35,14 +35,10 @@ export default function NewServer() {
     region: "ash" | "hil" | "nbg1" | "fsn1" | "hel1";
     serverType: "cx23" | "cx33" | "cpx21" | "cpx31";
     agents: ("opencode" | "claude-code")[];
-    anthropicApiKey: string;
-    openaiApiKey: string;
   }>({
     region: "ash",
     serverType: "cpx21",
     agents: ["opencode"],
-    anthropicApiKey: "",
-    openaiApiKey: "",
   });
 
   const missing: string[] = [];
@@ -58,8 +54,6 @@ export default function NewServer() {
         region: form.region,
         serverType: form.serverType,
         agents: form.agents,
-        anthropicApiKey: form.anthropicApiKey || undefined,
-        openaiApiKey: form.openaiApiKey || undefined,
       });
       router.push("/dashboard");
     } catch (e: any) {
@@ -204,30 +198,6 @@ export default function NewServer() {
                 </button>
               );
             })}
-          </div>
-        </fieldset>
-
-        {/* API Keys */}
-        <fieldset>
-          <legend className="font-mono text-[11px] text-muted tracking-wide uppercase mb-1">LLM API Keys</legend>
-          <p className="font-mono text-[10px] text-muted/50 mb-3">
-            Injected as env vars on your server. Not stored in our database.
-          </p>
-          <div className="space-y-3">
-            <input
-              type="password"
-              placeholder="ANTHROPIC_API_KEY"
-              value={form.anthropicApiKey}
-              onChange={(e) => setForm({ ...form, anthropicApiKey: e.target.value })}
-              className="w-full p-3 rounded-lg"
-            />
-            <input
-              type="password"
-              placeholder="OPENAI_API_KEY (optional)"
-              value={form.openaiApiKey}
-              onChange={(e) => setForm({ ...form, openaiApiKey: e.target.value })}
-              className="w-full p-3 rounded-lg"
-            />
           </div>
         </fieldset>
 

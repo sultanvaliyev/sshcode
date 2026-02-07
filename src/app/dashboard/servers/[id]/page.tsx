@@ -5,7 +5,7 @@ import { api } from "@convex/_generated/api";
 import { Id } from "@convex/_generated/dataModel";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 
 const ALL_AGENTS = [
   { id: "opencode" as const, label: "OpenCode", description: "AI-powered code editor in the browser", port: 4096 },
@@ -40,6 +40,13 @@ export default function ServerDetail() {
     onConfirm: () => void;
   } | null>(null);
 
+  // Redirect if server not found / deleted
+  useEffect(() => {
+    if (server === null) {
+      router.push("/dashboard");
+    }
+  }, [server, router]);
+
   // server === undefined means still loading; null means not found / deleted
   if (server === undefined) {
     return (
@@ -53,7 +60,6 @@ export default function ServerDetail() {
   }
 
   if (server === null) {
-    router.push("/dashboard");
     return null;
   }
 

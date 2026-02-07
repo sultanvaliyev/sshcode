@@ -15,6 +15,11 @@ export default defineSchema({
     tailscaleApiKey: v.optional(v.string()), // encrypted via NaCl secretbox
     tailscaleTailnet: v.optional(v.string()),
 
+    // GitHub OAuth
+    githubAccessToken: v.optional(v.string()),  // encrypted via NaCl secretbox
+    githubUsername: v.optional(v.string()),
+    githubConnectedAt: v.optional(v.number()),
+
     plan: v.union(v.literal("free"), v.literal("pro")),
     createdAt: v.number(),
   })

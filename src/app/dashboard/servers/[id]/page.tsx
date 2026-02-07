@@ -333,37 +333,8 @@ export default function ServerDetail() {
         </div>
       )}
 
-      {/* Provisioning logs */}
-      <div className="mb-10">
-        <div className="flex items-center gap-2 mb-4">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-muted"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
-          <span className="font-mono text-[11px] text-muted tracking-wide">Setup Log</span>
-        </div>
-        <div className="bg-surface border border-border-subtle rounded-lg overflow-hidden">
-          {logs && logs.length > 0 ? (
-            <div className="divide-y divide-border-subtle">
-              {deduplicateLogs(logs).map((log) => (
-                <div key={log._id} className="flex items-start gap-4 px-5 py-3.5">
-                  <StepIcon status={log.status} />
-                  <div className="flex-1 min-w-0">
-                    <p className="font-mono text-xs text-foreground">{formatStep(log.step)}</p>
-                    {log.message && (
-                      <p className="font-mono text-[10px] text-muted mt-0.5 truncate">{log.message}</p>
-                    )}
-                  </div>
-                  <span className="font-mono text-[10px] text-muted/40 shrink-0">
-                    {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="px-5 py-8 text-center">
-              <p className="font-mono text-xs text-muted/50">No log entries yet</p>
-            </div>
-          )}
-        </div>
-      </div>
+      {/* Setup pipeline */}
+      <SetupPipeline logs={logs} serverAgents={server.agents} serverStatus={server.status} />
 
       {/* Confirm modal */}
       {confirmModal && (
@@ -430,41 +401,206 @@ function StatusChip({ status, health }: { status: string; health?: string }) {
   );
 }
 
-function StepIcon({ status }: { status: string }) {
-  if (status === "success") {
-    return (
-      <div className="w-5 h-5 rounded-full bg-terminal/10 flex items-center justify-center shrink-0 mt-0.5">
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-terminal"><polyline points="20 6 9 17 4 12"/></svg>
-      </div>
-    );
-  }
-  if (status === "running") {
-    return (
-      <div className="w-5 h-5 rounded-full bg-blue-400/10 flex items-center justify-center shrink-0 mt-0.5">
-        <div className="w-2 h-2 border border-blue-400/40 border-t-blue-400 rounded-full animate-spin" />
-      </div>
-    );
-  }
-  if (status === "error") {
-    return (
-      <div className="w-5 h-5 rounded-full bg-danger/10 flex items-center justify-center shrink-0 mt-0.5">
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-danger"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg>
-      </div>
-    );
-  }
-  return (
-    <div className="w-5 h-5 rounded-full bg-muted/10 flex items-center justify-center shrink-0 mt-0.5">
-      <div className="w-1.5 h-1.5 rounded-full bg-muted/30" />
-    </div>
-  );
-}
-
 function deduplicateLogs(logs: { _id: string; step: string; status: string; message?: string; timestamp: number }[]) {
   const byStep = new Map<string, typeof logs[number]>();
   for (const log of logs) {
     byStep.set(log.step, log);
   }
   return Array.from(byStep.values());
+}
+
+// ── Setup step definitions ──
+
+const STEP_META: Record<string, { label: string; icon: string }> = {
+  tailscale_auth_key: { label: "Create Tailscale auth key", icon: "key" },
+  hetzner_create:     { label: "Provision Hetzner server", icon: "server" },
+  setup_system_deps:  { label: "Install system packages", icon: "package" },
+  setup_tailscale:    { label: "Connect Tailscale VPN", icon: "network" },
+  setup_user_setup:   { label: "Configure server user", icon: "user" },
+  setup_nodejs:       { label: "Install Node.js runtime", icon: "code" },
+  setup_ttyd:         { label: "Install web terminal", icon: "terminal" },
+  setup_firewall:     { label: "Configure firewall", icon: "shield" },
+  setup_terminal:     { label: "Start web terminal", icon: "terminal" },
+  setup_opencode:     { label: "Install OpenCode", icon: "grid" },
+  setup_claude_code:  { label: "Install Claude Code", icon: "bot" },
+  setup_codex:        { label: "Install Codex CLI", icon: "bot" },
+};
+
+function getExpectedSteps(agents: string[]): string[] {
+  return [
+    "tailscale_auth_key",
+    "hetzner_create",
+    "setup_system_deps",
+    "setup_tailscale",
+    "setup_user_setup",
+    "setup_nodejs",
+    "setup_ttyd",
+    "setup_firewall",
+    "setup_terminal",
+    ...(agents.includes("opencode") ? ["setup_opencode"] : []),
+    ...(agents.includes("claude-code") ? ["setup_claude_code"] : []),
+    ...(agents.includes("codex") ? ["setup_codex"] : []),
+  ];
+}
+
+function StepNodeIcon({ type, status }: { type: string; status: "success" | "running" | "error" | "pending" }) {
+  const iconPaths: Record<string, React.ReactNode> = {
+    key:      <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4" />,
+    server:   <><rect width="20" height="8" x="2" y="2" rx="2" ry="2" /><rect width="20" height="8" x="2" y="14" rx="2" ry="2" /><line x1="6" x2="6.01" y1="6" y2="6" /><line x1="6" x2="6.01" y1="18" y2="18" /></>,
+    package:  <><path d="m16.5 9.4-9-5.19" /><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" /><polyline points="3.27 6.96 12 12.01 20.73 6.96" /><line x1="12" x2="12" y1="22.08" y2="12" /></>,
+    network:  <><rect x="16" y="16" width="6" height="6" rx="1" /><rect x="2" y="16" width="6" height="6" rx="1" /><rect x="9" y="2" width="6" height="6" rx="1" /><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3" /><path d="M12 12V8" /></>,
+    user:     <><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></>,
+    code:     <><polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" /></>,
+    terminal: <><polyline points="4 17 10 11 4 5" /><line x1="12" x2="20" y1="19" y2="19" /></>,
+    shield:   <><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" /></>,
+    grid:     <><rect width="7" height="7" x="3" y="3" rx="1" /><rect width="7" height="7" x="14" y="3" rx="1" /><rect width="7" height="7" x="14" y="14" rx="1" /><rect width="7" height="7" x="3" y="14" rx="1" /></>,
+    bot:      <><path d="M12 8V4H8" /><rect width="16" height="12" x="4" y="8" rx="2" /><path d="M2 14h2" /><path d="M20 14h2" /><path d="M15 13v2" /><path d="M9 13v2" /></>,
+  };
+
+  const colors = {
+    success: "text-terminal",
+    running: "text-blue-400",
+    error:   "text-danger",
+    pending: "text-muted/25",
+  };
+
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
+      className={colors[status]}
+    >
+      {iconPaths[type] || iconPaths.code}
+    </svg>
+  );
+}
+
+function SetupPipeline({
+  logs,
+  serverAgents,
+  serverStatus,
+}: {
+  logs: { _id: string; step: string; status: string; message?: string; timestamp: number }[] | undefined;
+  serverAgents: string[];
+  serverStatus: string;
+}) {
+  const expected = getExpectedSteps(serverAgents);
+  const logMap = new Map<string, { status: string; message?: string; timestamp: number }>();
+  if (logs) {
+    for (const log of logs) {
+      logMap.set(log.step, { status: log.status, message: log.message, timestamp: log.timestamp });
+    }
+  }
+
+  // Build the unified step list
+  const steps = expected.map((stepId) => {
+    const log = logMap.get(stepId);
+    const meta = STEP_META[stepId] || { label: stepId, icon: "code" };
+    let status: "success" | "running" | "error" | "pending" = "pending";
+    if (log) {
+      if (log.status === "success") status = "success";
+      else if (log.status === "running") status = "running";
+      else if (log.status === "error") status = "error";
+    }
+    return { id: stepId, ...meta, status, message: log?.message, timestamp: log?.timestamp };
+  });
+
+  const completedCount = steps.filter((s) => s.status === "success").length;
+  const hasError = steps.some((s) => s.status === "error");
+  const isComplete = serverStatus === "running";
+
+  return (
+    <div className="mb-10">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-muted"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <span className="font-mono text-[11px] text-muted tracking-wide">Setup Pipeline</span>
+        </div>
+        <span className="font-mono text-[10px] text-muted/60">
+          {hasError ? "failed" : isComplete ? "complete" : `${completedCount}/${steps.length}`}
+        </span>
+      </div>
+
+      {/* Progress bar */}
+      <div className="h-[2px] bg-border-subtle rounded-full mb-5 overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all duration-700 ease-out ${
+            hasError ? "bg-danger" : isComplete ? "bg-terminal" : "bg-blue-400"
+          }`}
+          style={{ width: `${Math.max((completedCount / steps.length) * 100, 2)}%` }}
+        />
+      </div>
+
+      {/* Pipeline steps */}
+      <div className="bg-surface border border-border-subtle rounded-lg overflow-hidden">
+        <div className="relative">
+          {/* Vertical trace line */}
+          <div className="absolute left-[23px] top-0 bottom-0 w-[1px] bg-border-subtle" />
+
+          {steps.map((step, i) => {
+            const isLast = i === steps.length - 1;
+
+            return (
+              <div key={step.id} className={`relative flex items-center gap-3 px-3 py-2.5 ${
+                !isLast ? "border-b border-border-subtle/50" : ""
+              } ${step.status === "running" ? "bg-blue-400/[0.03]" : step.status === "error" ? "bg-danger/[0.03]" : ""}`}>
+                {/* Node on the trace */}
+                <div className="relative z-10 flex items-center justify-center w-[22px] shrink-0">
+                  {step.status === "success" ? (
+                    <div className="w-[18px] h-[18px] rounded-full bg-terminal/10 border border-terminal/25 flex items-center justify-center">
+                      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" className="text-terminal"><polyline points="20 6 9 17 4 12"/></svg>
+                    </div>
+                  ) : step.status === "running" ? (
+                    <div className="w-[18px] h-[18px] rounded-full bg-blue-400/10 border border-blue-400/25 flex items-center justify-center">
+                      <div className="w-[8px] h-[8px] border-[1.5px] border-blue-400/30 border-t-blue-400 rounded-full animate-spin" />
+                    </div>
+                  ) : step.status === "error" ? (
+                    <div className="w-[18px] h-[18px] rounded-full bg-danger/10 border border-danger/25 flex items-center justify-center">
+                      <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" className="text-danger"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg>
+                    </div>
+                  ) : (
+                    <div className="w-[18px] h-[18px] rounded-full bg-muted/[0.06] border border-border-subtle flex items-center justify-center">
+                      <div className="w-[5px] h-[5px] rounded-full bg-muted/20" />
+                    </div>
+                  )}
+                </div>
+
+                {/* Icon + label */}
+                <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                  <StepNodeIcon type={step.icon} status={step.status} />
+                  <div className="flex-1 min-w-0">
+                    <span className={`font-mono text-[11px] leading-none ${
+                      step.status === "success" ? "text-foreground"
+                      : step.status === "running" ? "text-blue-400"
+                      : step.status === "error" ? "text-danger"
+                      : "text-muted/40"
+                    }`}>
+                      {step.label}
+                    </span>
+                    {step.message && step.status === "error" && (
+                      <p className="font-mono text-[10px] text-danger/60 mt-0.5 truncate">{step.message}</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Timestamp */}
+                {step.timestamp && step.status === "success" && (
+                  <span className="font-mono text-[10px] text-muted/30 shrink-0 tabular-nums">
+                    {new Date(step.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                  </span>
+                )}
+                {step.status === "running" && (
+                  <span className="font-mono text-[10px] text-blue-400/50 shrink-0 tracking-wider">
+                    ...
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function CopyField({ label, value, color }: { label: string; value: string; color?: "terminal" | "foreground" }) {
@@ -496,12 +632,7 @@ function CopyField({ label, value, color }: { label: string; value: string; colo
 }
 
 function formatStep(step: string): string {
-  const labels: Record<string, string> = {
-    tailscale_auth_key: "Create Tailscale auth key",
-    hetzner_create: "Provision Hetzner server",
-    software_install: "Install AI agents",
-  };
-  return labels[step] || step;
+  return STEP_META[step]?.label || step;
 }
 
 function ConfirmModal({

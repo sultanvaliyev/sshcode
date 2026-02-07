@@ -107,15 +107,25 @@ export const provisionServer = action({
       status: "installing",
       statusMessage: "Server created, installing software...",
     });
-    await logStep(ctx, serverId, "software_install", "running",
-      "Cloud-init running setup script on server...");
+    await logStep(ctx, serverId, "setup_system_deps", "running",
+      "Installing system packages...");
+
+    // Compute expected setup steps for the poller
+    const expectedSteps = [
+      "setup_system_deps", "setup_tailscale", "setup_user_setup",
+      "setup_nodejs", "setup_ttyd", "setup_firewall", "setup_terminal",
+      ...(args.agents.includes("opencode") ? ["setup_opencode"] : []),
+      ...(args.agents.includes("claude-code") ? ["setup_claude_code"] : []),
+      ...(args.agents.includes("codex") ? ["setup_codex"] : []),
+    ];
 
     // ── Step 4: Poll until setup completes ──
-    // Schedule a follow-up action to check if setup is done
-    await ctx.scheduler.runAfter(30_000, internal.provisioning.pollSetupStatus, {
+    await ctx.scheduler.runAfter(15_000, internal.provisioning.pollSetupStatus, {
       serverId,
       hetznerIp: hetznerServer.ip,
       attempt: 1,
+      expectedSteps,
+      loggedSteps: [],
     });
   },
 });
@@ -130,18 +140,92 @@ export const pollSetupStatus = internalAction({
     serverId: v.id("servers"),
     hetznerIp: v.string(),
     attempt: v.number(),
+    expectedSteps: v.array(v.string()),
+    loggedSteps: v.array(v.string()),
   },
   handler: async (ctx, args) => {
-    const MAX_ATTEMPTS = 40; // 20 minutes max
+    const MAX_ATTEMPTS = 80; // 80 * 15s = 20 minutes max
+    let newLoggedSteps = [...args.loggedSteps];
 
+    // Try to fetch granular progress from the setup-progress endpoint
     try {
-      // Check if setup is complete by reaching the management API (port 4098)
+      const response = await fetch(
+        `http://${args.hetznerIp}:4098/setup-progress`,
+        { signal: AbortSignal.timeout(5000) }
+      );
+      if (response.ok) {
+        const data = await response.json();
+        const completedSteps: string[] = data.steps || [];
+
+        // Check for failure
+        if (completedSteps.includes("FAILED")) {
+          // Find the step that was running and mark it as error
+          const lastExpected = args.expectedSteps.find(
+            (s) => !completedSteps.includes(s.replace("setup_", ""))
+          );
+          if (lastExpected) {
+            await logStep(ctx, args.serverId, lastExpected, "error", "Step failed during setup");
+          }
+          await ctx.runMutation(internal.servers.updateStatus, {
+            serverId: args.serverId,
+            status: "error",
+            statusMessage: "Setup failed — check provisioning logs",
+          });
+          return;
+        }
+
+        // Log newly completed steps
+        for (const step of args.expectedSteps) {
+          const progressKey = step.replace("setup_", "");
+          if (completedSteps.includes(progressKey) && !newLoggedSteps.includes(step)) {
+            await logStep(ctx, args.serverId, step, "success");
+            newLoggedSteps.push(step);
+          }
+        }
+
+        // Mark the next expected step as running
+        const nextPending = args.expectedSteps.find(
+          (s) => !newLoggedSteps.includes(s)
+        );
+        if (nextPending) {
+          await logStep(ctx, args.serverId, nextPending, "running");
+        }
+
+        // Check if setup is complete
+        if (completedSteps.includes("complete")) {
+          // Mark any remaining steps as success
+          for (const step of args.expectedSteps) {
+            if (!newLoggedSteps.includes(step)) {
+              await logStep(ctx, args.serverId, step, "success");
+              newLoggedSteps.push(step);
+            }
+          }
+          await ctx.runMutation(internal.servers.updateStatus, {
+            serverId: args.serverId,
+            status: "running",
+            statusMessage: "Server is ready",
+          });
+          return;
+        }
+      }
+    } catch {
+      // Progress endpoint not available yet — server still booting
+    }
+
+    // Fallback: also check management API /status (indicates full completion)
+    try {
       const response = await fetch(
         `http://${args.hetznerIp}:4098/status`,
         { signal: AbortSignal.timeout(5000) }
       );
       if (response.ok || response.status === 401) {
-        await logStep(ctx, args.serverId, "software_install", "success");
+        // Management API is up = setup is complete
+        for (const step of args.expectedSteps) {
+          if (!newLoggedSteps.includes(step)) {
+            await logStep(ctx, args.serverId, step, "success");
+            newLoggedSteps.push(step);
+          }
+        }
         await ctx.runMutation(internal.servers.updateStatus, {
           serverId: args.serverId,
           status: "running",
@@ -150,12 +234,18 @@ export const pollSetupStatus = internalAction({
         return;
       }
     } catch {
-      // Server not ready yet
+      // Not ready yet
     }
 
     if (args.attempt >= MAX_ATTEMPTS) {
-      await logStep(ctx, args.serverId, "software_install", "error",
-        "Timed out waiting for setup to complete");
+      // Mark current running step as error
+      const currentStep = args.expectedSteps.find(
+        (s) => !newLoggedSteps.includes(s)
+      );
+      if (currentStep) {
+        await logStep(ctx, args.serverId, currentStep, "error",
+          "Timed out waiting for setup to complete");
+      }
       await ctx.runMutation(internal.servers.updateStatus, {
         serverId: args.serverId,
         status: "error",
@@ -164,10 +254,11 @@ export const pollSetupStatus = internalAction({
       return;
     }
 
-    // Retry in 30 seconds
-    await ctx.scheduler.runAfter(30_000, internal.provisioning.pollSetupStatus, {
+    // Retry in 15 seconds
+    await ctx.scheduler.runAfter(15_000, internal.provisioning.pollSetupStatus, {
       ...args,
       attempt: args.attempt + 1,
+      loggedSteps: newLoggedSteps,
     });
   },
 });
@@ -543,18 +634,27 @@ function generateSetupScript(config: {
 
   return `#!/bin/bash
 set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
 exec > /var/log/sshcode-setup.log 2>&1
 
 echo "=== SSHCode Setup Starting ==="
 
+# ── Progress tracking ──
+PROGRESS_FILE="/tmp/sshcode-progress"
+touch "\${PROGRESS_FILE}"
+mark_progress() { echo "\$1" >> "\${PROGRESS_FILE}"; }
+trap 'mark_progress "FAILED"' ERR
+
 # ── System updates ──
 apt-get update
 apt-get install -y curl wget git jq unzip
+mark_progress "system_deps"
 
 # ── Install Tailscale ──
 curl -fsSL https://tailscale.com/install.sh | sh
 systemctl enable --now tailscaled
 tailscale up --authkey=${shellEscape(config.tailscaleAuthKey)} --hostname=${shellEscape(config.serverName)}
+mark_progress "tailscale"
 
 # ── Create sshcode user with limited sudo ──
 useradd -m -s /bin/bash sshcode
@@ -570,27 +670,70 @@ loginctl enable-linger sshcode
 echo ${shellEscape(envFileB64)} | base64 -d > /home/sshcode/.env
 chown sshcode:sshcode /home/sshcode/.env
 chmod 600 /home/sshcode/.env
+mark_progress "user_setup"
 
 # ── Install Node.js (required for management API + Claude Code) ──
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y nodejs
+mark_progress "nodejs"
+
+# ── Temporary progress API (serves progress until management API takes over) ──
+cat > /tmp/sshcode-progress-api.js <<'PROGEOF'
+const http = require("http");
+const fs = require("fs");
+http.createServer((req, res) => {
+  res.setHeader("Content-Type", "application/json");
+  if (req.url === "/setup-progress") {
+    try {
+      const data = fs.readFileSync("/tmp/sshcode-progress", "utf8").trim();
+      const steps = data ? data.split("\\n") : [];
+      res.writeHead(200);
+      res.end(JSON.stringify({ steps }));
+    } catch {
+      res.writeHead(200);
+      res.end(JSON.stringify({ steps: [] }));
+    }
+  } else {
+    res.writeHead(404);
+    res.end("{}");
+  }
+}).listen(4098, "0.0.0.0");
+PROGEOF
+node /tmp/sshcode-progress-api.js &
+PROGRESS_PID=$!
 
 # ── Install ttyd (web terminal) ──
-wget -O /usr/local/bin/ttyd https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.x86_64
+curl -fsSL --connect-timeout 10 --max-time 60 --retry 3 --retry-delay 5 -o /usr/local/bin/ttyd https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64
 chmod +x /usr/local/bin/ttyd
+mark_progress "ttyd"
 
 # ── Firewall: restrict management + service ports to Tailscale only ──
 # Get the Tailscale interface (typically tailscale0)
 TS_IFACE=$(ip -o link show | grep -oP 'tailscale\\d+' | head -1 || echo "tailscale0")
-apt-get install -y iptables-persistent || true
-# Allow on Tailscale interface
+# Set up iptables rules (no iptables-persistent to avoid interactive prompts)
 for PORT in 4096 4097 4099 4100; do
   iptables -A INPUT -i "\${TS_IFACE}" -p tcp --dport \${PORT} -j ACCEPT
   iptables -A INPUT -p tcp --dport \${PORT} -j DROP
 done
-# Save rules
 mkdir -p /etc/iptables
 iptables-save > /etc/iptables/rules.v4
+# Restore rules on boot
+cat > /etc/systemd/system/iptables-restore.service <<'IPTEOF'
+[Unit]
+Description=Restore iptables rules
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/iptables-restore /etc/iptables/rules.v4
+
+[Install]
+WantedBy=multi-user.target
+IPTEOF
+systemctl daemon-reload
+systemctl enable iptables-restore.service
+mark_progress "firewall"
 
 # ── Decode server password for ttyd service configs ──
 SERVER_PASSWORD=$(grep '^OPENCODE_SERVER_PASSWORD=' /home/sshcode/.env | cut -d= -f2-)
@@ -616,10 +759,18 @@ TERMEOF
 chown -R sshcode:sshcode /home/sshcode/.config
 su - sshcode -c "XDG_RUNTIME_DIR=/run/user/$(id -u sshcode) systemctl --user daemon-reload"
 su - sshcode -c "XDG_RUNTIME_DIR=/run/user/$(id -u sshcode) systemctl --user enable --now terminal.service"
+mark_progress "terminal"
 
 ${installOpenCode ? `
-# ── Install OpenCode ──
-su - sshcode -c "curl -fsSL https://opencode.ai/install | bash"
+# ── Install OpenCode (optimized direct binary download) ──
+mkdir -p /home/sshcode/.opencode/bin
+chown -R sshcode:sshcode /home/sshcode/.opencode
+
+# Download latest release directly (much faster than install script)
+su - sshcode -c "curl -fsSL -o /tmp/opencode.tar.gz https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-x64.tar.gz"
+su - sshcode -c "tar -xzf /tmp/opencode.tar.gz -C /home/sshcode/.opencode/bin"
+su - sshcode -c "chmod 755 /home/sshcode/.opencode/bin/opencode"
+su - sshcode -c "rm /tmp/opencode.tar.gz"
 
 # ── OpenCode systemd service ──
 cat > /home/sshcode/.config/systemd/user/opencode.service <<'EOF'
@@ -642,11 +793,12 @@ EOF
 chown -R sshcode:sshcode /home/sshcode/.config
 su - sshcode -c "XDG_RUNTIME_DIR=/run/user/$(id -u sshcode) systemctl --user daemon-reload"
 su - sshcode -c "XDG_RUNTIME_DIR=/run/user/$(id -u sshcode) systemctl --user enable --now opencode.service"
+mark_progress "opencode"
 ` : ""}
 
 ${installClaudeCode ? `
-# ── Install Claude Code ──
-npm install -g @anthropic-ai/claude-code
+# ── Install Claude Code (optimized with npm cache and progress off) ──
+npm install -g @anthropic-ai/claude-code --progress=false --cache /tmp/npm-cache
 
 # ── Claude Code via ttyd systemd service ──
 cat > /home/sshcode/.config/systemd/user/claude-code.service <<CCEOF
@@ -669,11 +821,12 @@ CCEOF
 chown -R sshcode:sshcode /home/sshcode/.config
 su - sshcode -c "XDG_RUNTIME_DIR=/run/user/$(id -u sshcode) systemctl --user daemon-reload"
 su - sshcode -c "XDG_RUNTIME_DIR=/run/user/$(id -u sshcode) systemctl --user enable --now claude-code.service"
+mark_progress "claude_code"
 ` : ""}
 
 ${installCodex ? `
-# ── Install Codex CLI ──
-npm install -g @openai/codex
+# ── Install Codex CLI (optimized with npm cache and progress off) ──
+npm install -g @openai/codex --progress=false --cache /tmp/npm-cache
 
 # ── Codex CLI via ttyd systemd service ──
 cat > /home/sshcode/.config/systemd/user/codex.service <<CXEOF
@@ -696,7 +849,11 @@ CXEOF
 chown -R sshcode:sshcode /home/sshcode/.config
 su - sshcode -c "XDG_RUNTIME_DIR=/run/user/$(id -u sshcode) systemctl --user daemon-reload"
 su - sshcode -c "XDG_RUNTIME_DIR=/run/user/$(id -u sshcode) systemctl --user enable --now codex.service"
+mark_progress "codex"
 ` : ""}
+
+# ── Kill temporary progress API ──
+kill \${PROGRESS_PID} 2>/dev/null || true
 
 # ── Management API ──
 cat > /home/sshcode/management-api.js <<'MGMTEOF'
@@ -904,6 +1061,21 @@ function readBody(req) {
 
 const server = http.createServer(async (req, res) => {
   res.setHeader("Content-Type", "application/json");
+
+  // Unauthenticated: progress endpoint for the poller
+  if (req.method === "GET" && req.url === "/setup-progress") {
+    const fs = require("fs");
+    try {
+      const data = fs.readFileSync("/tmp/sshcode-progress", "utf8").trim();
+      const steps = data ? data.split("\\n") : [];
+      res.writeHead(200);
+      return res.end(JSON.stringify({ steps }));
+    } catch {
+      res.writeHead(200);
+      return res.end(JSON.stringify({ steps: [] }));
+    }
+  }
+
   const auth = req.headers.authorization || "";
   if (auth !== \`Bearer \${TOKEN}\`) { res.writeHead(401); return res.end(JSON.stringify({ error: "unauthorized" })); }
 
@@ -972,6 +1144,7 @@ systemctl daemon-reload
 systemctl enable --now sshcode-mgmt.service
 
 # ── Signal completion ──
+mark_progress "complete"
 touch /tmp/sshcode-ready
 echo "=== SSHCode Setup Complete ==="
 `;

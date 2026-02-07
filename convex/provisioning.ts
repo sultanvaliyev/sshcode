@@ -68,11 +68,6 @@ export const provisionServer = action({
     await logStep(ctx, serverId, "hetzner_create", "running");
     let hetznerServer: { id: string; ip: string };
     try {
-      // Decrypt GitHub token if user has connected their account
-      const githubToken = user.githubAccessToken
-        ? decrypt(user.githubAccessToken)
-        : undefined;
-
       const setupScript = generateSetupScript({
         serverName,
         tailscaleAuthKey,
@@ -81,7 +76,6 @@ export const provisionServer = action({
         opencodePort: 4096,
         claudeCodePort: 4097,
         codexPort: 4100,
-        githubToken,
       });
 
       hetznerServer = await createHetznerServer(
@@ -534,26 +528,18 @@ function generateSetupScript(config: {
   opencodePort: number;
   claudeCodePort: number;
   codexPort: number;
-  githubToken?: string;
 }): string {
   // Build .env content safely, then base64-encode for injection
   const envLines: string[] = [
     `OPENCODE_SERVER_USERNAME=sshcode`,
     `OPENCODE_SERVER_PASSWORD=${config.serverPassword}`,
   ];
-  if (config.githubToken) envLines.push(`GITHUB_TOKEN=${config.githubToken}`);
 
   const envFileB64 = toBase64(envLines.join("\n") + "\n");
 
   const installOpenCode = config.agents.includes("opencode");
   const installClaudeCode = config.agents.includes("claude-code");
   const installCodex = config.agents.includes("codex");
-
-  // Git credentials URL, base64-encoded for safe injection
-  const gitCredB64 = config.githubToken
-    ? toBase64(`https://oauth2:${config.githubToken}@github.com`)
-    : "";
-  const githubTokenB64 = config.githubToken ? toBase64(config.githubToken) : "";
 
   return `#!/bin/bash
 set -euo pipefail
@@ -580,31 +566,6 @@ chmod 440 /etc/sudoers.d/sshcode
 mkdir -p /home/sshcode/.config/systemd/user
 loginctl enable-linger sshcode
 
-${config.githubToken ? `
-# ── Configure Git credentials (base64-decoded for safety) ──
-su - sshcode -c "git config --global credential.helper store"
-echo ${shellEscape(gitCredB64)} | base64 -d > /home/sshcode/.git-credentials
-chown sshcode:sshcode /home/sshcode/.git-credentials
-chmod 600 /home/sshcode/.git-credentials
-su - sshcode -c "git config --global user.name 'sshcode'"
-su - sshcode -c "git config --global user.email 'sshcode@server'"
-echo "Git credentials configured"
-
-# ── Install GitHub CLI (non-fatal) ──
-(
-  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg 2>/dev/null
-  chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-  apt-get update -qq && apt-get install -y gh
-  echo "gh CLI installed"
-) || echo "WARNING: gh CLI install failed (non-fatal, git credentials still work)"
-
-# ── Set GITHUB_TOKEN for gh CLI + shell sessions ──
-GITHUB_TOKEN_VAL=$(echo ${shellEscape(githubTokenB64)} | base64 -d)
-echo "export GITHUB_TOKEN=\\"\${GITHUB_TOKEN_VAL}\\"" >> /home/sshcode/.bashrc
-chown sshcode:sshcode /home/sshcode/.bashrc
-` : "# No GitHub token — git/gh not configured"}
-
 # ── Write environment file (base64-decoded for safety) ──
 echo ${shellEscape(envFileB64)} | base64 -d > /home/sshcode/.env
 chown sshcode:sshcode /home/sshcode/.env
@@ -623,7 +584,7 @@ chmod +x /usr/local/bin/ttyd
 TS_IFACE=$(ip -o link show | grep -oP 'tailscale\\d+' | head -1 || echo "tailscale0")
 apt-get install -y iptables-persistent || true
 # Allow on Tailscale interface
-for PORT in 4096 4097 4098 4099 4100; do
+for PORT in 4096 4097 4099 4100; do
   iptables -A INPUT -i "\${TS_IFACE}" -p tcp --dport \${PORT} -j ACCEPT
   iptables -A INPUT -p tcp --dport \${PORT} -j DROP
 done

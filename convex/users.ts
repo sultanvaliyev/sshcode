@@ -48,6 +48,11 @@ export const updateKeys = mutation({
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) throw new Error("Not authenticated");
 
+    // Input length validation
+    if (args.hetznerApiKey && args.hetznerApiKey.length > 256) throw new Error("API key too long");
+    if (args.tailscaleApiKey && args.tailscaleApiKey.length > 256) throw new Error("API key too long");
+    if (args.tailscaleTailnet && args.tailscaleTailnet.length > 128) throw new Error("Tailnet ID too long");
+
     let user = await ctx.db
       .query("users")
       .withIndex("by_clerkId", (q) => q.eq("clerkId", identity.subject))

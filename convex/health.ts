@@ -1,6 +1,7 @@
 import { internalAction } from "./_generated/server";
-import { api, internal } from "./_generated/api";
+import { internal } from "./_generated/api";
 import { internalQuery } from "./_generated/server";
+import { decrypt } from "./lib/encryption";
 
 export const getRunningServers = internalQuery({
   args: {},
@@ -19,7 +20,7 @@ export const checkAllServers = internalAction({
 
     for (const server of servers) {
       if (!server.hetznerIp) {
-        await ctx.runMutation(api.servers.updateHealth, {
+        await ctx.runMutation(internal.servers.updateHealth, {
           serverId: server._id,
           healthStatus: "unreachable",
           lastHealthCheck: Date.now(),
@@ -31,10 +32,11 @@ export const checkAllServers = internalAction({
 
       // Primary check: management API on port 4098
       try {
+        const serverPassword = decrypt(server.serverPassword);
         const res = await fetch(
           `http://${server.hetznerIp}:4098/status`,
           {
-            headers: { Authorization: `Bearer ${server.serverPassword}` },
+            headers: { Authorization: `Bearer ${serverPassword}` },
             signal: AbortSignal.timeout(5000),
           }
         );
@@ -44,7 +46,7 @@ export const checkAllServers = internalAction({
       }
 
       if (mgmtReachable) {
-        await ctx.runMutation(api.servers.updateHealth, {
+        await ctx.runMutation(internal.servers.updateHealth, {
           serverId: server._id,
           healthStatus: "healthy",
           lastHealthCheck: Date.now(),
@@ -71,7 +73,7 @@ export const checkAllServers = internalAction({
         }
       }
 
-      await ctx.runMutation(api.servers.updateHealth, {
+      await ctx.runMutation(internal.servers.updateHealth, {
         serverId: server._id,
         healthStatus: agentReachable ? "degraded" : "unreachable",
         lastHealthCheck: Date.now(),

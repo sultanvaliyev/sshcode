@@ -1,4 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "@convex/_generated/api";
+
+const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 export async function GET(req: NextRequest) {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
@@ -40,7 +45,7 @@ export async function GET(req: NextRequest) {
 
     const tokenData = await tokenRes.json();
     if (tokenData.error) {
-      console.error("GitHub token exchange error:", tokenData);
+      console.error("GitHub token exchange error:", tokenData.error);
       return NextResponse.redirect(`${settingsUrl}?github_error=exchange_failed`);
     }
 
@@ -52,29 +57,22 @@ export async function GET(req: NextRequest) {
     });
     const githubUser = await userRes.json();
 
-    // Pass token + username to settings page via short-lived cookie
-    // The settings page will call the Convex mutation to encrypt & store
+    // Store token directly via server-side Convex call (never reaches the browser)
+    const { getToken } = await auth();
+    const convexToken = await getToken({ template: "convex" });
+    if (convexToken) {
+      convex.setAuth(convexToken);
+      await convex.mutation(api.users.connectGithub, {
+        accessToken,
+        username: githubUser.login,
+      });
+    }
+
     const response = NextResponse.redirect(`${settingsUrl}?github=connected`);
-
-    response.cookies.set("github_token", accessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      maxAge: 60, // 1 minute — just long enough for the page to read it
-      path: "/",
-    });
-    response.cookies.set("github_username", githubUser.login, {
-      httpOnly: false, // client needs to read this
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      maxAge: 60,
-      path: "/",
-    });
     response.cookies.delete("github_oauth_state");
-
     return response;
   } catch (e: any) {
-    console.error("GitHub OAuth callback error:", e);
+    console.error("GitHub OAuth callback error:", e.message);
     return NextResponse.redirect(`${settingsUrl}?github_error=exchange_failed`);
   }
 }

@@ -1,7 +1,7 @@
-import { action } from "./_generated/server";
+import { action, internalAction } from "./_generated/server";
 import { v } from "convex/values";
-import { api } from "./_generated/api";
-import { decrypt } from "./lib/encryption";
+import { api, internal } from "./_generated/api";
+import { decrypt, encrypt } from "./lib/encryption";
 
 // ──────────────────────────────────────────────
 // MAIN PROVISIONING ACTION
@@ -19,6 +19,21 @@ export const provisionServer = action({
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) throw new Error("Not authenticated");
 
+    // Validate LLM API key format (alphanumeric, hyphens, underscores, dots only)
+    const apiKeyPattern = /^[a-zA-Z0-9_\-.:]+$/;
+    if (args.anthropicApiKey && !apiKeyPattern.test(args.anthropicApiKey)) {
+      throw new Error("Invalid Anthropic API key format");
+    }
+    if (args.openaiApiKey && !apiKeyPattern.test(args.openaiApiKey)) {
+      throw new Error("Invalid OpenAI API key format");
+    }
+    if (args.anthropicApiKey && args.anthropicApiKey.length > 256) {
+      throw new Error("Anthropic API key too long");
+    }
+    if (args.openaiApiKey && args.openaiApiKey.length > 256) {
+      throw new Error("OpenAI API key too long");
+    }
+
     // 1. Get user and their API keys (encrypted at rest)
     const user = await ctx.runQuery(api.users.getCurrent);
     if (!user) throw new Error("User not found");
@@ -32,13 +47,13 @@ export const provisionServer = action({
     const serverPassword = generatePassword(24);
     const serverName = `sshcode-${generateId(8)}`;
 
-    // 2. Create server record
-    const serverId = await ctx.runMutation(api.servers.createInternal, {
+    // 2. Create server record (password encrypted at rest)
+    const serverId = await ctx.runMutation(internal.servers.createInternal, {
       userId: user._id,
       region: args.region,
       serverType: args.serverType,
       agents: args.agents,
-      serverPassword,
+      serverPassword: encrypt(serverPassword),
     });
 
     // ── Step 1: Create Tailscale auth key ──
@@ -58,7 +73,7 @@ export const provisionServer = action({
       await logStep(ctx, serverId, "tailscale_auth_key", "success");
     } catch (e: any) {
       await logStep(ctx, serverId, "tailscale_auth_key", "error", e.message);
-      await ctx.runMutation(api.servers.updateStatus, {
+      await ctx.runMutation(internal.servers.updateStatus, {
         serverId,
         status: "error",
         statusMessage: "Failed to create Tailscale auth key",
@@ -98,7 +113,7 @@ export const provisionServer = action({
         `Server ID: ${hetznerServer.id}`);
     } catch (e: any) {
       await logStep(ctx, serverId, "hetzner_create", "error", e.message);
-      await ctx.runMutation(api.servers.updateStatus, {
+      await ctx.runMutation(internal.servers.updateStatus, {
         serverId,
         status: "error",
         statusMessage: "Failed to create Hetzner server",
@@ -107,7 +122,7 @@ export const provisionServer = action({
     }
 
     // ── Step 3: Update server record with IPs ──
-    await ctx.runMutation(api.servers.patchServer, {
+    await ctx.runMutation(internal.servers.patchServer, {
       serverId,
       hetznerServerId: String(hetznerServer.id),
       hetznerIp: hetznerServer.ip,
@@ -121,7 +136,7 @@ export const provisionServer = action({
 
     // ── Step 4: Poll until setup completes ──
     // Schedule a follow-up action to check if setup is done
-    await ctx.scheduler.runAfter(30_000, api.provisioning.pollSetupStatus, {
+    await ctx.scheduler.runAfter(30_000, internal.provisioning.pollSetupStatus, {
       serverId,
       hetznerIp: hetznerServer.ip,
       attempt: 1,
@@ -134,7 +149,7 @@ export const provisionServer = action({
 // POLL SETUP COMPLETION
 // ──────────────────────────────────────────────
 
-export const pollSetupStatus = action({
+export const pollSetupStatus = internalAction({
   args: {
     serverId: v.id("servers"),
     hetznerIp: v.string(),
@@ -151,7 +166,7 @@ export const pollSetupStatus = action({
       );
       if (response.ok || response.status === 401) {
         await logStep(ctx, args.serverId, "software_install", "success");
-        await ctx.runMutation(api.servers.updateStatus, {
+        await ctx.runMutation(internal.servers.updateStatus, {
           serverId: args.serverId,
           status: "running",
           statusMessage: "Server is ready",
@@ -165,7 +180,7 @@ export const pollSetupStatus = action({
     if (args.attempt >= MAX_ATTEMPTS) {
       await logStep(ctx, args.serverId, "software_install", "error",
         "Timed out waiting for setup to complete");
-      await ctx.runMutation(api.servers.updateStatus, {
+      await ctx.runMutation(internal.servers.updateStatus, {
         serverId: args.serverId,
         status: "error",
         statusMessage: "Setup timed out after 20 minutes",
@@ -174,7 +189,7 @@ export const pollSetupStatus = action({
     }
 
     // Retry in 30 seconds
-    await ctx.scheduler.runAfter(30_000, api.provisioning.pollSetupStatus, {
+    await ctx.scheduler.runAfter(30_000, internal.provisioning.pollSetupStatus, {
       ...args,
       attempt: args.attempt + 1,
     });
@@ -200,6 +215,7 @@ export const installAgent = action({
     if (server.status !== "running") throw new Error("Server must be running to install agents");
     if (server.agents.includes(args.agent)) throw new Error(`${args.agent} is already installed`);
 
+    // server.serverPassword is already decrypted by the get query
     let response: Response;
     try {
       response = await fetch(`http://${server.hetznerIp}:4098/install`, {
@@ -226,7 +242,7 @@ export const installAgent = action({
       throw new Error(`Install failed: ${errorMsg || response.statusText}`);
     }
 
-    await ctx.runMutation(api.servers.patchServer, {
+    await ctx.runMutation(internal.servers.patchServer, {
       serverId: args.serverId,
       agents: [...server.agents, args.agent],
     });
@@ -247,6 +263,7 @@ export const uninstallAgent = action({
     if (server.status !== "running") throw new Error("Server must be running to uninstall agents");
     if (!server.agents.includes(args.agent)) throw new Error(`${args.agent} is not installed`);
 
+    // server.serverPassword is already decrypted by the get query
     let response: Response;
     try {
       response = await fetch(`http://${server.hetznerIp}:4098/uninstall`, {
@@ -273,7 +290,7 @@ export const uninstallAgent = action({
       throw new Error(`Uninstall failed: ${errorMsg || response.statusText}`);
     }
 
-    await ctx.runMutation(api.servers.patchServer, {
+    await ctx.runMutation(internal.servers.patchServer, {
       serverId: args.serverId,
       agents: server.agents.filter((a: string) => a !== args.agent),
     });
@@ -303,6 +320,7 @@ export const resetCredentials = action({
     if (!server) throw new Error("Server not found");
     if (server.status !== "running") throw new Error("Server must be running to reset credentials");
 
+    // server.serverPassword is already decrypted by the get query
     // Call management API with the OLD password (still active)
     let response: Response;
     try {
@@ -330,11 +348,11 @@ export const resetCredentials = action({
       throw new Error(`Reset failed: ${errorMsg || response.statusText}`);
     }
 
-    // Update the DB record with new credentials
-    await ctx.runMutation(api.servers.patchServer, {
+    // Update the DB record with new credentials (encrypted at rest)
+    await ctx.runMutation(internal.servers.patchServer, {
       serverId: args.serverId,
       serverUsername: args.username,
-      serverPassword: args.password,
+      serverPassword: encrypt(args.password),
     });
   },
 });
@@ -356,7 +374,7 @@ export const deleteServer = action({
     });
     if (!user || !server) throw new Error("Not found");
 
-    await ctx.runMutation(api.servers.updateStatus, {
+    await ctx.runMutation(internal.servers.updateStatus, {
       serverId: args.serverId,
       status: "deleting",
     });
@@ -377,7 +395,7 @@ export const deleteServer = action({
     // You can use Tailscale API to delete the device
 
     // Delete the DB record
-    await ctx.runMutation(api.servers.remove, {
+    await ctx.runMutation(internal.servers.remove, {
       serverId: args.serverId,
     });
   },
@@ -425,7 +443,8 @@ async function createHetznerServer(
 
   if (!response.ok) {
     const err = await response.json();
-    throw new Error(`Hetzner API error: ${err.error?.message || response.statusText}`);
+    console.error("Hetzner API error:", err.error?.message || response.statusText);
+    throw new Error("Failed to create server — check your Hetzner API key and permissions");
   }
 
   const data = await response.json();
@@ -503,7 +522,8 @@ async function createTailscaleAuthKey(
 
   if (!response.ok) {
     const err = await response.json();
-    throw new Error(`Tailscale API error: ${err.message || response.statusText}`);
+    console.error("Tailscale API error:", err.message || response.statusText);
+    throw new Error("Failed to create Tailscale auth key — check your API key and tailnet permissions");
   }
 
   const data = await response.json();
@@ -514,6 +534,15 @@ async function createTailscaleAuthKey(
 // ──────────────────────────────────────────────
 // HELPER: Setup Script Generator
 // ──────────────────────────────────────────────
+
+function shellEscape(s: string): string {
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+function toBase64(s: string): string {
+  // Works in both Node.js and Convex runtime
+  return btoa(unescape(encodeURIComponent(s)));
+}
 
 function generateSetupScript(config: {
   serverName: string;
@@ -526,13 +555,25 @@ function generateSetupScript(config: {
   claudeCodePort: number;
   githubToken?: string;
 }): string {
-  const envVars: string[] = [];
-  if (config.anthropicApiKey) envVars.push(`ANTHROPIC_API_KEY="${config.anthropicApiKey}"`);
-  if (config.openaiApiKey) envVars.push(`OPENAI_API_KEY="${config.openaiApiKey}"`);
-  if (config.githubToken) envVars.push(`GITHUB_TOKEN="${config.githubToken}"`);
+  // Build .env content safely, then base64-encode for injection
+  const envLines: string[] = [
+    `OPENCODE_SERVER_USERNAME=sshcode`,
+    `OPENCODE_SERVER_PASSWORD=${config.serverPassword}`,
+  ];
+  if (config.anthropicApiKey) envLines.push(`ANTHROPIC_API_KEY=${config.anthropicApiKey}`);
+  if (config.openaiApiKey) envLines.push(`OPENAI_API_KEY=${config.openaiApiKey}`);
+  if (config.githubToken) envLines.push(`GITHUB_TOKEN=${config.githubToken}`);
+
+  const envFileB64 = toBase64(envLines.join("\n") + "\n");
 
   const installOpenCode = config.agents.includes("opencode");
   const installClaudeCode = config.agents.includes("claude-code");
+
+  // Git credentials URL, base64-encoded for safe injection
+  const gitCredB64 = config.githubToken
+    ? toBase64(`https://oauth2:${config.githubToken}@github.com`)
+    : "";
+  const githubTokenB64 = config.githubToken ? toBase64(config.githubToken) : "";
 
   return `#!/bin/bash
 set -euo pipefail
@@ -547,20 +588,24 @@ apt-get install -y curl wget git jq unzip
 # ── Install Tailscale ──
 curl -fsSL https://tailscale.com/install.sh | sh
 systemctl enable --now tailscaled
-tailscale up --authkey="${config.tailscaleAuthKey}" --hostname="${config.serverName}"
+tailscale up --authkey=${shellEscape(config.tailscaleAuthKey)} --hostname=${shellEscape(config.serverName)}
 
-# ── Create sshcode user with sudo ──
+# ── Create sshcode user with limited sudo ──
 useradd -m -s /bin/bash sshcode
 usermod -aG sudo sshcode
-echo "sshcode ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/sshcode
+cat > /etc/sudoers.d/sshcode <<'SUDOEOF'
+sshcode ALL=(ALL) NOPASSWD: /bin/systemctl restart sshcode-mgmt.service, /bin/systemctl daemon-reload
+SUDOEOF
+chmod 440 /etc/sudoers.d/sshcode
 mkdir -p /home/sshcode/.config/systemd/user
 loginctl enable-linger sshcode
 
 ${config.githubToken ? `
-# ── Configure Git credentials ──
+# ── Configure Git credentials (base64-decoded for safety) ──
 su - sshcode -c "git config --global credential.helper store"
-su - sshcode -c 'echo "https://oauth2:${config.githubToken}@github.com" > /home/sshcode/.git-credentials'
-su - sshcode -c "chmod 600 /home/sshcode/.git-credentials"
+echo ${shellEscape(gitCredB64)} | base64 -d > /home/sshcode/.git-credentials
+chown sshcode:sshcode /home/sshcode/.git-credentials
+chmod 600 /home/sshcode/.git-credentials
 su - sshcode -c "git config --global user.name 'sshcode'"
 su - sshcode -c "git config --global user.email 'sshcode@server'"
 echo "Git credentials configured"
@@ -575,16 +620,13 @@ echo "Git credentials configured"
 ) || echo "WARNING: gh CLI install failed (non-fatal, git credentials still work)"
 
 # ── Set GITHUB_TOKEN for gh CLI + shell sessions ──
-echo 'export GITHUB_TOKEN="${config.githubToken}"' >> /home/sshcode/.bashrc
+GITHUB_TOKEN_VAL=$(echo ${shellEscape(githubTokenB64)} | base64 -d)
+echo "export GITHUB_TOKEN=\\"\${GITHUB_TOKEN_VAL}\\"" >> /home/sshcode/.bashrc
 chown sshcode:sshcode /home/sshcode/.bashrc
 ` : "# No GitHub token — git/gh not configured"}
 
-# ── Write environment file ──
-cat > /home/sshcode/.env <<'ENVEOF'
-OPENCODE_SERVER_USERNAME=sshcode
-OPENCODE_SERVER_PASSWORD=${config.serverPassword}
-${envVars.join("\n")}
-ENVEOF
+# ── Write environment file (base64-decoded for safety) ──
+echo ${shellEscape(envFileB64)} | base64 -d > /home/sshcode/.env
 chown sshcode:sshcode /home/sshcode/.env
 chmod 600 /home/sshcode/.env
 
@@ -596,8 +638,24 @@ apt-get install -y nodejs
 wget -O /usr/local/bin/ttyd https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.x86_64
 chmod +x /usr/local/bin/ttyd
 
+# ── Firewall: restrict management + service ports to Tailscale only ──
+# Get the Tailscale interface (typically tailscale0)
+TS_IFACE=$(ip -o link show | grep -oP 'tailscale\\d+' | head -1 || echo "tailscale0")
+apt-get install -y iptables-persistent || true
+# Allow on Tailscale interface
+for PORT in 4096 4097 4098 4099; do
+  iptables -A INPUT -i "\${TS_IFACE}" -p tcp --dport \${PORT} -j ACCEPT
+  iptables -A INPUT -p tcp --dport \${PORT} -j DROP
+done
+# Save rules
+mkdir -p /etc/iptables
+iptables-save > /etc/iptables/rules.v4
+
+# ── Decode server password for ttyd service configs ──
+SERVER_PASSWORD=$(grep '^OPENCODE_SERVER_PASSWORD=' /home/sshcode/.env | cut -d= -f2-)
+
 # ── Web terminal (bash) on port 4099 ──
-cat > /home/sshcode/.config/systemd/user/terminal.service <<'EOF'
+cat > /home/sshcode/.config/systemd/user/terminal.service <<TERMEOF
 [Unit]
 Description=Web Terminal (bash)
 After=network.target tailscaled.service
@@ -605,14 +663,14 @@ After=network.target tailscaled.service
 [Service]
 Type=simple
 EnvironmentFile=/home/sshcode/.env
-ExecStart=/usr/local/bin/ttyd -W -p 4099 -c sshcode:${config.serverPassword} bash
+ExecStart=/usr/local/bin/ttyd -W -p 4099 -c sshcode:\${SERVER_PASSWORD} bash
 WorkingDirectory=/home/sshcode
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=default.target
-EOF
+TERMEOF
 
 chown -R sshcode:sshcode /home/sshcode/.config
 su - sshcode -c "XDG_RUNTIME_DIR=/run/user/$(id -u sshcode) systemctl --user daemon-reload"
@@ -631,7 +689,7 @@ After=network.target tailscaled.service
 [Service]
 Type=simple
 EnvironmentFile=/home/sshcode/.env
-ExecStart=/home/sshcode/.opencode/bin/opencode web --hostname 0.0.0.0 --port ${config.opencodePort}
+ExecStart=/home/sshcode/.opencode/bin/opencode web --hostname 0.0.0.0 --port ${String(config.opencodePort)}
 WorkingDirectory=/home/sshcode
 Restart=always
 RestartSec=5
@@ -650,7 +708,7 @@ ${installClaudeCode ? `
 npm install -g @anthropic-ai/claude-code
 
 # ── Claude Code via ttyd systemd service ──
-cat > /home/sshcode/.config/systemd/user/claude-code.service <<'EOF'
+cat > /home/sshcode/.config/systemd/user/claude-code.service <<CCEOF
 [Unit]
 Description=Claude Code via ttyd
 After=network.target tailscaled.service
@@ -658,14 +716,14 @@ After=network.target tailscaled.service
 [Service]
 Type=simple
 EnvironmentFile=/home/sshcode/.env
-ExecStart=/usr/local/bin/ttyd -W -p ${config.claudeCodePort} -c sshcode:${config.serverPassword} claude
+ExecStart=/usr/local/bin/ttyd -W -p ${String(config.claudeCodePort)} -c sshcode:\${SERVER_PASSWORD} claude
 WorkingDirectory=/home/sshcode
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=default.target
-EOF
+CCEOF
 
 chown -R sshcode:sshcode /home/sshcode/.config
 su - sshcode -c "XDG_RUNTIME_DIR=/run/user/$(id -u sshcode) systemctl --user daemon-reload"
@@ -768,11 +826,27 @@ EOF
 
 function resetCredentials(username, password, res) {
   const fs = require("fs");
+
+  // Input validation (defense in depth — Convex side also validates)
+  if (!/^[a-zA-Z0-9_-]+$/.test(username) || username.length > 64) {
+    res.writeHead(400);
+    return res.end(JSON.stringify({ error: "Invalid username format" }));
+  }
+  if (password.length < 8 || password.length > 256) {
+    res.writeHead(400);
+    return res.end(JSON.stringify({ error: "Password must be 8-256 characters" }));
+  }
+  // Reject characters that could break service file syntax
+  if (/[\\n\\r\\0]/.test(password)) {
+    res.writeHead(400);
+    return res.end(JSON.stringify({ error: "Password contains invalid characters" }));
+  }
+
   try {
-    // Update .env with new password
+    // Update .env with new credentials
     let env = fs.readFileSync("/home/sshcode/.env", "utf8");
-    env = env.replace(/^OPENCODE_SERVER_USERNAME=.*$/m, \`OPENCODE_SERVER_USERNAME=\${username}\`);
-    env = env.replace(/^OPENCODE_SERVER_PASSWORD=.*$/m, \`OPENCODE_SERVER_PASSWORD=\${password}\`);
+    env = env.replace(/^OPENCODE_SERVER_USERNAME=.*$/m, "OPENCODE_SERVER_USERNAME=" + username);
+    env = env.replace(/^OPENCODE_SERVER_PASSWORD=.*$/m, "OPENCODE_SERVER_PASSWORD=" + password);
     fs.writeFileSync("/home/sshcode/.env", env);
 
     // Update ttyd service files with new credentials
@@ -783,7 +857,7 @@ function resetCredentials(username, password, res) {
     for (const svcPath of ttydServices) {
       if (fs.existsSync(svcPath)) {
         let svc = fs.readFileSync(svcPath, "utf8");
-        svc = svc.replace(/-c [^:]+:[^ ]+/, \`-c \${username}:\${password}\`);
+        svc = svc.replace(/-c [^:]+:[^ ]+/, "-c " + username + ":" + password);
         fs.writeFileSync(svcPath, svc);
       }
     }
@@ -794,17 +868,16 @@ function resetCredentials(username, password, res) {
     try { execSync(systemctlUser("restart terminal.service")); } catch {}
     try { execSync(systemctlUser("restart opencode.service")); } catch {}
 
-    // Update TOKEN in memory for management API (takes effect on next restart)
-    // Schedule self-restart after responding
+    // Schedule self-restart after responding so new TOKEN takes effect
     setTimeout(() => {
-      try { execSync("systemctl restart sshcode-mgmt.service"); } catch {}
+      try { execSync("sudo systemctl restart sshcode-mgmt.service"); } catch {}
     }, 1000);
 
     res.writeHead(200);
     res.end(JSON.stringify({ ok: true }));
   } catch (e) {
     res.writeHead(500);
-    res.end(JSON.stringify({ error: e.message }));
+    res.end(JSON.stringify({ error: "Credential reset failed" }));
   }
 }
 
@@ -843,19 +916,25 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "POST" && req.url === "/install") {
     const body = await readBody(req);
-    if (!body.agent) { res.writeHead(400); return res.end(JSON.stringify({ error: "agent required" })); }
+    if (!body.agent || !["opencode", "claude-code"].includes(body.agent)) {
+      res.writeHead(400); return res.end(JSON.stringify({ error: "agent must be 'opencode' or 'claude-code'" }));
+    }
     return installAgent(body.agent, res);
   }
 
   if (req.method === "POST" && req.url === "/uninstall") {
     const body = await readBody(req);
-    if (!body.agent) { res.writeHead(400); return res.end(JSON.stringify({ error: "agent required" })); }
+    if (!body.agent || !["opencode", "claude-code"].includes(body.agent)) {
+      res.writeHead(400); return res.end(JSON.stringify({ error: "agent must be 'opencode' or 'claude-code'" }));
+    }
     return uninstallAgent(body.agent, res);
   }
 
   if (req.method === "POST" && req.url === "/reset-credentials") {
     const body = await readBody(req);
-    if (!body.username || !body.password) { res.writeHead(400); return res.end(JSON.stringify({ error: "username and password required" })); }
+    if (!body.username || typeof body.username !== "string" || !body.password || typeof body.password !== "string") {
+      res.writeHead(400); return res.end(JSON.stringify({ error: "username and password required" }));
+    }
     return resetCredentials(body.username, body.password, res);
   }
 
@@ -867,7 +946,7 @@ server.listen(PORT, "0.0.0.0", () => console.log(\`Management API listening on :
 MGMTEOF
 chown sshcode:sshcode /home/sshcode/management-api.js
 
-# ── Management API systemd service (runs as root for systemctl access) ──
+# ── Management API systemd service (runs as sshcode user) ──
 cat > /etc/systemd/system/sshcode-mgmt.service <<'EOF'
 [Unit]
 Description=SSHCode Management API
@@ -875,6 +954,8 @@ After=network.target
 
 [Service]
 Type=simple
+User=sshcode
+Group=sshcode
 EnvironmentFile=/home/sshcode/.env
 ExecStart=/usr/bin/node /home/sshcode/management-api.js
 WorkingDirectory=/home/sshcode
@@ -901,15 +982,24 @@ echo "=== SSHCode Setup Complete ==="
 
 function generatePassword(length: number): string {
   const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  const randomBytes = new Uint8Array(length);
+  crypto.getRandomValues(randomBytes);
   let result = "";
   for (let i = 0; i < length; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
+    result += chars.charAt(randomBytes[i] % chars.length);
   }
   return result;
 }
 
 function generateId(length: number): string {
-  return Math.random().toString(36).substring(2, 2 + length);
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  const randomBytes = new Uint8Array(length);
+  crypto.getRandomValues(randomBytes);
+  let result = "";
+  for (let i = 0; i < length; i++) {
+    result += chars.charAt(randomBytes[i] % chars.length);
+  }
+  return result;
 }
 
 async function logStep(
@@ -919,7 +1009,7 @@ async function logStep(
   status: "pending" | "running" | "success" | "error",
   message?: string
 ) {
-  await ctx.runMutation(api.servers.addLog, {
+  await ctx.runMutation(internal.servers.addLog, {
     serverId,
     step,
     status,

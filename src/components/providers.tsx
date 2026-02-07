@@ -15,8 +15,6 @@ function ConvexTokenProvider({ children }: { children: ReactNode }) {
         template: "convex",
         skipCache: forceRefreshToken,
       });
-      // DEBUG: remove after fixing auth
-      console.log("[ConvexAuth] isSignedIn:", isSignedIn, "token:", token ? `${token.substring(0, 20)}...` : "NULL");
       return token ?? null;
     },
     [getToken, isSignedIn]

@@ -18,13 +18,13 @@ export async function GET() {
     "redirect_uri",
     `${appUrl}/api/auth/github/callback`
   );
-  githubAuthUrl.searchParams.set("scope", "repo read:user");
+  githubAuthUrl.searchParams.set("scope", "read:user");
   githubAuthUrl.searchParams.set("state", state);
 
   const response = NextResponse.redirect(githubAuthUrl.toString());
   response.cookies.set("github_oauth_state", state, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
+    secure: process.env.NODE_ENV !== "development",
     sameSite: "lax",
     maxAge: 600,
     path: "/",

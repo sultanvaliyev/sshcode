@@ -36,6 +36,14 @@ export default async function DashboardLayout({
             >
               settings
             </Link>
+            <a
+              href="https://github.com/sultanvaliyev/sshcode/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-mono text-[11px] tracking-wide text-muted hover:text-foreground hover:bg-surface-raised px-3 py-1.5 rounded transition-all"
+            >
+              github
+            </a>
             <SignOutButton redirectUrl="/">
               <button className="font-mono text-[11px] tracking-wide text-muted hover:text-danger hover:bg-surface-raised px-3 py-1.5 rounded transition-all">
                 sign_out

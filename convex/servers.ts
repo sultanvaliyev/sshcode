@@ -1,5 +1,6 @@
-import { mutation, query } from "./_generated/server";
+import { mutation, query, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
+import { decrypt } from "./lib/encryption";
 
 export const list = query({
   args: {},
@@ -13,10 +14,13 @@ export const list = query({
       .first();
     if (!user) return [];
 
-    return await ctx.db
+    const servers = await ctx.db
       .query("servers")
       .withIndex("by_userId", (q) => q.eq("userId", user._id))
       .collect();
+
+    // Strip sensitive fields from list response (password not needed in list view)
+    return servers.map(({ serverPassword, ...rest }) => rest);
   },
 });
 
@@ -36,13 +40,31 @@ export const get = query({
       .first();
     if (!user || server.userId !== user._id) return null;
 
-    return server;
+    // Decrypt password for authorized owner display
+    const { serverPassword, ...rest } = server;
+    return {
+      ...rest,
+      serverPassword: decrypt(serverPassword),
+    };
   },
 });
 
 export const getLogs = query({
   args: { serverId: v.id("servers") },
   handler: async (ctx, { serverId }) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return [];
+
+    // Verify ownership
+    const server = await ctx.db.get(serverId);
+    if (!server) return [];
+
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_clerkId", (q) => q.eq("clerkId", identity.subject))
+      .first();
+    if (!user || server.userId !== user._id) return [];
+
     return await ctx.db
       .query("provisioningLogs")
       .withIndex("by_serverId", (q) => q.eq("serverId", serverId))
@@ -50,7 +72,9 @@ export const getLogs = query({
   },
 });
 
-export const updateStatus = mutation({
+// ── Internal mutations (only callable from other Convex functions) ──
+
+export const updateStatus = internalMutation({
   args: {
     serverId: v.id("servers"),
     status: v.union(
@@ -71,7 +95,7 @@ export const updateStatus = mutation({
   },
 });
 
-export const addLog = mutation({
+export const addLog = internalMutation({
   args: {
     serverId: v.id("servers"),
     step: v.string(),
@@ -94,7 +118,7 @@ export const addLog = mutation({
   },
 });
 
-export const createInternal = mutation({
+export const createInternal = internalMutation({
   args: {
     userId: v.id("users"),
     region: v.string(),
@@ -121,7 +145,7 @@ export const createInternal = mutation({
   },
 });
 
-export const patchServer = mutation({
+export const patchServer = internalMutation({
   args: {
     serverId: v.id("servers"),
     hetznerServerId: v.optional(v.string()),
@@ -152,7 +176,7 @@ export const patchServer = mutation({
   },
 });
 
-export const updateHealth = mutation({
+export const updateHealth = internalMutation({
   args: {
     serverId: v.id("servers"),
     healthStatus: v.union(
@@ -170,7 +194,7 @@ export const updateHealth = mutation({
   },
 });
 
-export const remove = mutation({
+export const remove = internalMutation({
   args: { serverId: v.id("servers") },
   handler: async (ctx, { serverId }) => {
     // Delete logs first

@@ -41,7 +41,6 @@ export default defineSchema({
     tailscaleName: v.optional(v.string()),   // e.g. "sshcode-abc123"
     tailscaleDomain: v.optional(v.string()), // e.g. "taila43c9d.ts.net"
     tailscaleIp: v.optional(v.string()),     // 100.x.x.x
-    tailscaleAuthKey: v.optional(v.string()),
 
     // Agent config
     agents: v.array(v.union(
@@ -51,7 +50,7 @@ export default defineSchema({
     opencodePort: v.optional(v.number()),    // default 4096
     claudeCodePort: v.optional(v.number()),  // default 4097 (via ttyd)
     serverUsername: v.optional(v.string()),   // default "sshcode"
-    serverPassword: v.string(),              // generated, for web UIs + management API
+    serverPassword: v.string(),              // encrypted via NaCl secretbox
 
     // Status
     status: v.union(

@@ -14,6 +14,14 @@ export default function LandingPage() {
           <span className="font-mono font-semibold text-sm tracking-wider text-foreground">SSHCode</span>
         </div>
         <div className="flex items-center gap-6">
+          <a
+            href="https://github.com/sultanvaliyev/sshcode/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-mono text-xs tracking-wide text-muted hover:text-foreground transition-colors"
+          >
+            github
+          </a>
           <Link
             href="/sign-in"
             className="font-mono text-xs tracking-wide text-muted hover:text-foreground transition-colors"

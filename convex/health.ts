@@ -3,6 +3,14 @@ import { internal } from "./_generated/api";
 import { internalQuery } from "./_generated/server";
 import { decrypt } from "./lib/encryption";
 
+function tryDecrypt(value: string): string {
+  try {
+    return decrypt(value);
+  } catch {
+    return value;
+  }
+}
+
 export const getRunningServers = internalQuery({
   args: {},
   handler: async (ctx) => {
@@ -32,7 +40,7 @@ export const checkAllServers = internalAction({
 
       // Primary check: management API on port 4098
       try {
-        const serverPassword = decrypt(server.serverPassword);
+        const serverPassword = tryDecrypt(server.serverPassword);
         const res = await fetch(
           `http://${server.hetznerIp}:4098/status`,
           {

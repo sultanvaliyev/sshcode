@@ -2,6 +2,15 @@ import { mutation, query, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import { decrypt } from "./lib/encryption";
 
+/** Try to decrypt; if it fails, the value is legacy plaintext — return as-is. */
+function tryDecrypt(value: string): string {
+  try {
+    return decrypt(value);
+  } catch {
+    return value;
+  }
+}
+
 export const list = query({
   args: {},
   handler: async (ctx) => {
@@ -44,7 +53,7 @@ export const get = query({
     const { serverPassword, ...rest } = server;
     return {
       ...rest,
-      serverPassword: decrypt(serverPassword),
+      serverPassword: tryDecrypt(serverPassword),
     };
   },
 });

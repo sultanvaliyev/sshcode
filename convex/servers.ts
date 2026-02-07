@@ -132,7 +132,7 @@ export const createInternal = internalMutation({
     userId: v.id("users"),
     region: v.string(),
     serverType: v.string(),
-    agents: v.array(v.union(v.literal("opencode"), v.literal("claude-code"))),
+    agents: v.array(v.union(v.literal("opencode"), v.literal("claude-code"), v.literal("codex"))),
     serverPassword: v.string(),
   },
   handler: async (ctx, args) => {
@@ -162,7 +162,7 @@ export const patchServer = internalMutation({
     tailscaleName: v.optional(v.string()),
     tailscaleDomain: v.optional(v.string()),
     tailscaleIp: v.optional(v.string()),
-    agents: v.optional(v.array(v.union(v.literal("opencode"), v.literal("claude-code")))),
+    agents: v.optional(v.array(v.union(v.literal("opencode"), v.literal("claude-code"), v.literal("codex")))),
     serverUsername: v.optional(v.string()),
     serverPassword: v.optional(v.string()),
     status: v.optional(v.union(

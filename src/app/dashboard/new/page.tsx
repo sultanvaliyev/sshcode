@@ -34,7 +34,7 @@ export default function NewServer() {
   const [form, setForm] = useState<{
     region: "ash" | "hil" | "nbg1" | "fsn1" | "hel1";
     serverType: "cx23" | "cx33" | "cpx21" | "cpx31";
-    agents: ("opencode" | "claude-code")[];
+    agents: ("opencode" | "claude-code" | "codex")[];
   }>({
     region: "ash",
     serverType: "cpx21",
@@ -161,10 +161,11 @@ export default function NewServer() {
         {/* Agents */}
         <fieldset>
           <legend className="font-mono text-[11px] text-muted tracking-wide uppercase mb-3">AI Agents</legend>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             {[
               { value: "opencode", label: "OpenCode", desc: "Web IDE" },
               { value: "claude-code", label: "Claude Code", desc: "Terminal via ttyd" },
+              { value: "codex", label: "Codex CLI", desc: "Terminal via ttyd" },
             ].map((a) => {
               const selected = form.agents.includes(a.value as any);
               return (

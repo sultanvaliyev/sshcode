@@ -11,7 +11,7 @@ export const provisionServer = action({
   args: {
     region: v.union(v.literal("ash"), v.literal("hil"), v.literal("nbg1"), v.literal("fsn1"), v.literal("hel1")),
     serverType: v.union(v.literal("cx23"), v.literal("cx33"), v.literal("cpx21"), v.literal("cpx31")),
-    agents: v.array(v.union(v.literal("opencode"), v.literal("claude-code"))),
+    agents: v.array(v.union(v.literal("opencode"), v.literal("claude-code"), v.literal("codex"))),
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
@@ -80,6 +80,7 @@ export const provisionServer = action({
         serverPassword,
         opencodePort: 4096,
         claudeCodePort: 4097,
+        codexPort: 4100,
         githubToken,
       });
 
@@ -185,7 +186,7 @@ export const pollSetupStatus = internalAction({
 export const installAgent = action({
   args: {
     serverId: v.id("servers"),
-    agent: v.union(v.literal("opencode"), v.literal("claude-code")),
+    agent: v.union(v.literal("opencode"), v.literal("claude-code"), v.literal("codex")),
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
@@ -233,7 +234,7 @@ export const installAgent = action({
 export const uninstallAgent = action({
   args: {
     serverId: v.id("servers"),
-    agent: v.union(v.literal("opencode"), v.literal("claude-code")),
+    agent: v.union(v.literal("opencode"), v.literal("claude-code"), v.literal("codex")),
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
@@ -532,6 +533,7 @@ function generateSetupScript(config: {
   serverPassword: string;
   opencodePort: number;
   claudeCodePort: number;
+  codexPort: number;
   githubToken?: string;
 }): string {
   // Build .env content safely, then base64-encode for injection
@@ -545,6 +547,7 @@ function generateSetupScript(config: {
 
   const installOpenCode = config.agents.includes("opencode");
   const installClaudeCode = config.agents.includes("claude-code");
+  const installCodex = config.agents.includes("codex");
 
   // Git credentials URL, base64-encoded for safe injection
   const gitCredB64 = config.githubToken
@@ -620,7 +623,7 @@ chmod +x /usr/local/bin/ttyd
 TS_IFACE=$(ip -o link show | grep -oP 'tailscale\\d+' | head -1 || echo "tailscale0")
 apt-get install -y iptables-persistent || true
 # Allow on Tailscale interface
-for PORT in 4096 4097 4098 4099; do
+for PORT in 4096 4097 4098 4099 4100; do
   iptables -A INPUT -i "\${TS_IFACE}" -p tcp --dport \${PORT} -j ACCEPT
   iptables -A INPUT -p tcp --dport \${PORT} -j DROP
 done
@@ -707,6 +710,33 @@ su - sshcode -c "XDG_RUNTIME_DIR=/run/user/$(id -u sshcode) systemctl --user dae
 su - sshcode -c "XDG_RUNTIME_DIR=/run/user/$(id -u sshcode) systemctl --user enable --now claude-code.service"
 ` : ""}
 
+${installCodex ? `
+# ── Install Codex CLI ──
+npm install -g @openai/codex
+
+# ── Codex CLI via ttyd systemd service ──
+cat > /home/sshcode/.config/systemd/user/codex.service <<CXEOF
+[Unit]
+Description=Codex CLI via ttyd
+After=network.target tailscaled.service
+
+[Service]
+Type=simple
+EnvironmentFile=/home/sshcode/.env
+ExecStart=/usr/local/bin/ttyd -W -p ${String(config.codexPort)} -c sshcode:\${SERVER_PASSWORD} codex
+WorkingDirectory=/home/sshcode
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+CXEOF
+
+chown -R sshcode:sshcode /home/sshcode/.config
+su - sshcode -c "XDG_RUNTIME_DIR=/run/user/$(id -u sshcode) systemctl --user daemon-reload"
+su - sshcode -c "XDG_RUNTIME_DIR=/run/user/$(id -u sshcode) systemctl --user enable --now codex.service"
+` : ""}
+
 # ── Management API ──
 cat > /home/sshcode/management-api.js <<'MGMTEOF'
 const http = require("http");
@@ -730,12 +760,17 @@ function isInstalled(agent) {
       execSync("which claude 2>/dev/null");
       return true;
     }
+    if (agent === "codex") {
+      execSync("which codex 2>/dev/null");
+      return true;
+    }
   } catch { return false; }
   return false;
 }
 
 function isRunning(agent) {
-  const svc = agent === "opencode" ? "opencode.service" : "claude-code.service";
+  const svcMap = { "opencode": "opencode.service", "claude-code": "claude-code.service", "codex": "codex.service" };
+  const svc = svcMap[agent] || "unknown.service";
   try {
     const out = execSync(systemctlUser(\`is-active \${svc}\`)).toString().trim();
     return out === "active";
@@ -796,6 +831,32 @@ EOF
       if (err) { res.writeHead(500); res.end(JSON.stringify({ error: err.message })); }
       else { res.writeHead(200); res.end(JSON.stringify({ ok: true, agent: "claude-code" })); }
     });
+  } else if (agent === "codex") {
+    exec(\`
+      npm install -g @openai/codex && \\
+      cat > /home/sshcode/.config/systemd/user/codex.service <<EOF
+[Unit]
+Description=Codex CLI via ttyd
+After=network.target tailscaled.service
+
+[Service]
+Type=simple
+EnvironmentFile=/home/sshcode/.env
+ExecStart=/usr/local/bin/ttyd -W -p 4100 -c sshcode:\${serverPassword} codex
+WorkingDirectory=/home/sshcode
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
+      chown -R sshcode:sshcode /home/sshcode/.config && \\
+      \${systemctlUser("daemon-reload")} && \\
+      \${systemctlUser("enable --now codex.service")}
+    \`.trim(), (err) => {
+      if (err) { res.writeHead(500); res.end(JSON.stringify({ error: err.message })); }
+      else { res.writeHead(200); res.end(JSON.stringify({ ok: true, agent: "codex" })); }
+    });
   } else {
     res.writeHead(400); res.end(JSON.stringify({ error: "unknown agent" }));
   }
@@ -829,6 +890,7 @@ function resetCredentials(username, password, res) {
     // Update ttyd service files with new credentials
     const ttydServices = [
       "/home/sshcode/.config/systemd/user/claude-code.service",
+      "/home/sshcode/.config/systemd/user/codex.service",
       "/home/sshcode/.config/systemd/user/terminal.service",
     ];
     for (const svcPath of ttydServices) {
@@ -842,6 +904,7 @@ function resetCredentials(username, password, res) {
     // Reload and restart services
     execSync(systemctlUser("daemon-reload"));
     try { execSync(systemctlUser("restart claude-code.service")); } catch {}
+    try { execSync(systemctlUser("restart codex.service")); } catch {}
     try { execSync(systemctlUser("restart terminal.service")); } catch {}
     try { execSync(systemctlUser("restart opencode.service")); } catch {}
 
@@ -859,7 +922,8 @@ function resetCredentials(username, password, res) {
 }
 
 function uninstallAgent(agent, res) {
-  const svc = agent === "opencode" ? "opencode.service" : "claude-code.service";
+  const svcMap = { "opencode": "opencode.service", "claude-code": "claude-code.service", "codex": "codex.service" };
+  const svc = svcMap[agent] || "unknown.service";
   exec(\`
     \${systemctlUser(\`stop \${svc}\`)} ; \\
     \${systemctlUser(\`disable \${svc}\`)}
@@ -884,7 +948,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "GET" && req.url === "/status") {
     const agents = {};
-    for (const a of ["opencode", "claude-code"]) {
+    for (const a of ["opencode", "claude-code", "codex"]) {
       agents[a] = { installed: isInstalled(a), running: isRunning(a) };
     }
     res.writeHead(200);
@@ -893,16 +957,16 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "POST" && req.url === "/install") {
     const body = await readBody(req);
-    if (!body.agent || !["opencode", "claude-code"].includes(body.agent)) {
-      res.writeHead(400); return res.end(JSON.stringify({ error: "agent must be 'opencode' or 'claude-code'" }));
+    if (!body.agent || !["opencode", "claude-code", "codex"].includes(body.agent)) {
+      res.writeHead(400); return res.end(JSON.stringify({ error: "agent must be 'opencode', 'claude-code', or 'codex'" }));
     }
     return installAgent(body.agent, res);
   }
 
   if (req.method === "POST" && req.url === "/uninstall") {
     const body = await readBody(req);
-    if (!body.agent || !["opencode", "claude-code"].includes(body.agent)) {
-      res.writeHead(400); return res.end(JSON.stringify({ error: "agent must be 'opencode' or 'claude-code'" }));
+    if (!body.agent || !["opencode", "claude-code", "codex"].includes(body.agent)) {
+      res.writeHead(400); return res.end(JSON.stringify({ error: "agent must be 'opencode', 'claude-code', or 'codex'" }));
     }
     return uninstallAgent(body.agent, res);
   }

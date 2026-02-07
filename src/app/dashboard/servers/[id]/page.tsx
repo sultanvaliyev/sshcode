@@ -10,6 +10,7 @@ import { useState, useCallback, useEffect } from "react";
 const ALL_AGENTS = [
   { id: "opencode" as const, label: "OpenCode", description: "AI-powered code editor in the browser", port: 4096 },
   { id: "claude-code" as const, label: "Claude Code", description: "Claude Code terminal via ttyd", port: 4097 },
+  { id: "codex" as const, label: "Codex CLI", description: "OpenAI Codex terminal via ttyd", port: 4100 },
 ];
 
 export default function ServerDetail() {
@@ -80,7 +81,7 @@ export default function ServerDetail() {
     }
   }
 
-  async function handleInstall(agent: "opencode" | "claude-code") {
+  async function handleInstall(agent: "opencode" | "claude-code" | "codex") {
     setAgentError(null);
     setAgentLoading(agent);
     try {
@@ -92,7 +93,7 @@ export default function ServerDetail() {
     }
   }
 
-  function handleUninstall(agent: "opencode" | "claude-code") {
+  function handleUninstall(agent: "opencode" | "claude-code" | "codex") {
     const label = ALL_AGENTS.find((a) => a.id === agent)?.label || agent;
     setConfirmModal({
       title: `Remove ${label}`,
@@ -170,6 +171,13 @@ export default function ServerDetail() {
               <CopyField
                 label="Claude Code Terminal"
                 value={`http://${server.tailscaleName}.${server.tailscaleDomain || "tailnet.ts.net"}:${server.claudeCodePort || 4097}`}
+                color="terminal"
+              />
+            )}
+            {server.agents.includes("codex") && (
+              <CopyField
+                label="Codex CLI Terminal"
+                value={`http://${server.tailscaleName}.${server.tailscaleDomain || "tailnet.ts.net"}:${server.codexPort || 4100}`}
                 color="terminal"
               />
             )}
@@ -491,7 +499,7 @@ function formatStep(step: string): string {
   const labels: Record<string, string> = {
     tailscale_auth_key: "Create Tailscale auth key",
     hetzner_create: "Provision Hetzner server",
-    software_install: "Install OpenCode & Claude Code",
+    software_install: "Install AI agents",
   };
   return labels[step] || step;
 }

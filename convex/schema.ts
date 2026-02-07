@@ -42,10 +42,12 @@ export default defineSchema({
     // Agent config
     agents: v.array(v.union(
       v.literal("opencode"),
-      v.literal("claude-code")
+      v.literal("claude-code"),
+      v.literal("codex")
     )),
     opencodePort: v.optional(v.number()),    // default 4096
     claudeCodePort: v.optional(v.number()),  // default 4097 (via ttyd)
+    codexPort: v.optional(v.number()),       // default 4100 (via ttyd)
     serverUsername: v.optional(v.string()),   // default "sshcode"
     serverPassword: v.string(),              // encrypted via NaCl secretbox
 

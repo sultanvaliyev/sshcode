@@ -13,28 +13,34 @@ export default function NewServer() {
   const [loading, setLoading] = useState(false);
 
   const regions = [
-    { value: "ash", label: "Ashburn, VA", sub: "US East" },
-    { value: "hil", label: "Hillsboro, OR", sub: "US West" },
-    { value: "nbg1", label: "Nuremberg", sub: "Germany" },
-    { value: "hel1", label: "Helsinki", sub: "Finland" },
+    { value: "ash" as const, label: "Ashburn, VA", sub: "US East" },
+    { value: "hil" as const, label: "Hillsboro, OR", sub: "US West" },
+    { value: "nbg1" as const, label: "Nuremberg", sub: "Germany" },
+    { value: "hel1" as const, label: "Helsinki", sub: "Finland" },
   ];
 
   const isUSRegion = (r: string) => r === "ash" || r === "hil";
 
   const serverSizes = (region: string) => isUSRegion(region)
     ? [
-        { value: "cpx21", label: "Small", specs: "3 vCPU / 4GB RAM", price: "~$11/mo" },
-        { value: "cpx31", label: "Medium", specs: "4 vCPU / 8GB RAM", price: "~$19/mo" },
+        { value: "cpx21" as const, label: "Small", specs: "3 vCPU / 4GB RAM", price: "~$11/mo" },
+        { value: "cpx31" as const, label: "Medium", specs: "4 vCPU / 8GB RAM", price: "~$19/mo" },
       ]
     : [
-        { value: "cx23", label: "Small", specs: "2 vCPU / 4GB RAM", price: "~$4/mo" },
-        { value: "cx33", label: "Medium", specs: "4 vCPU / 8GB RAM", price: "~$7/mo" },
+        { value: "cx23" as const, label: "Small", specs: "2 vCPU / 4GB RAM", price: "~$4/mo" },
+        { value: "cx33" as const, label: "Medium", specs: "4 vCPU / 8GB RAM", price: "~$7/mo" },
       ];
 
-  const [form, setForm] = useState({
+  const [form, setForm] = useState<{
+    region: "ash" | "hil" | "nbg1" | "fsn1" | "hel1";
+    serverType: "cx23" | "cx33" | "cpx21" | "cpx31";
+    agents: ("opencode" | "claude-code")[];
+    anthropicApiKey: string;
+    openaiApiKey: string;
+  }>({
     region: "ash",
     serverType: "cpx21",
-    agents: ["opencode"] as ("opencode" | "claude-code")[],
+    agents: ["opencode"],
     anthropicApiKey: "",
     openaiApiKey: "",
   });

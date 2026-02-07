@@ -660,7 +660,7 @@ mark_progress "tailscale"
 useradd -m -s /bin/bash sshcode
 usermod -aG sudo sshcode
 cat > /etc/sudoers.d/sshcode <<'SUDOEOF'
-sshcode ALL=(ALL) NOPASSWD: /bin/systemctl restart sshcode-mgmt.service, /bin/systemctl daemon-reload
+sshcode ALL=(ALL) NOPASSWD: /bin/systemctl restart sshcode-mgmt.service, /bin/systemctl daemon-reload, /usr/bin/npm
 SUDOEOF
 chmod 440 /etc/sudoers.d/sshcode
 mkdir -p /home/sshcode/.config/systemd/user
@@ -865,7 +865,7 @@ const TOKEN = process.env.OPENCODE_SERVER_PASSWORD;
 const SSHCODE_UID = String(execSync("id -u sshcode").toString().trim());
 
 function systemctlUser(cmd) {
-  return \`su - sshcode -c "XDG_RUNTIME_DIR=/run/user/\${SSHCODE_UID} systemctl --user \${cmd}"\`;
+  return \`XDG_RUNTIME_DIR=/run/user/\${SSHCODE_UID} systemctl --user \${cmd}\`;
 }
 
 function isInstalled(agent) {
@@ -899,7 +899,7 @@ function installAgent(agent, res) {
   const serverPassword = TOKEN;
   if (agent === "opencode") {
     exec(\`
-      su - sshcode -c "curl -fsSL https://opencode.ai/install | bash" && \\
+      curl -fsSL https://opencode.ai/install | bash && \\
       cat > /home/sshcode/.config/systemd/user/opencode.service <<'EOF'
 [Unit]
 Description=OpenCode Server
@@ -925,7 +925,7 @@ EOF
     });
   } else if (agent === "claude-code") {
     exec(\`
-      npm install -g @anthropic-ai/claude-code && \\
+      sudo npm install -g @anthropic-ai/claude-code && \\
       cat > /home/sshcode/.config/systemd/user/claude-code.service <<EOF
 [Unit]
 Description=Claude Code via ttyd
@@ -951,7 +951,7 @@ EOF
     });
   } else if (agent === "codex") {
     exec(\`
-      npm install -g @openai/codex && \\
+      sudo npm install -g @openai/codex && \\
       cat > /home/sshcode/.config/systemd/user/codex.service <<EOF
 [Unit]
 Description=Codex CLI via ttyd

@@ -31,7 +31,6 @@ You (any device)
   - [Hetzner Cloud API Token](#hetzner-cloud-api-token)
   - [Tailscale API Key](#tailscale-api-key)
   - [Tailscale ACL Tags](#tailscale-acl-tags)
-  - [LLM API Keys](#llm-api-keys)
 - [Usage](#usage)
   - [First-Time Setup](#first-time-setup)
   - [Deploying a Server](#deploying-a-server)
@@ -253,16 +252,7 @@ SSHCode tags every provisioned VM with `tag:sshcode`. You need to allow this tag
 
 This lets admin users (you) create devices with the `tag:sshcode` tag.
 
-### LLM API Keys
 
-When creating a server, you can optionally provide:
-
-- **Anthropic API Key** — required for Claude Code (`sk-ant-...`)
-- **OpenAI API Key** — required for OpenCode with OpenAI models
-
-These keys are **not stored** in the SSHCode database. They're injected as environment variables directly on the VM during provisioning and written to a file with restricted permissions (`chmod 600`).
-
----
 
 ## Usage
 
@@ -284,8 +274,7 @@ These keys are **not stored** in the SSHCode database. They're injected as envir
    - Helsinki, Finland (EU)
 3. Choose a **server size** (2 vCPU / 4GB RAM or 4 vCPU / 8GB RAM)
 4. Select **agents** — OpenCode, Claude Code, or both
-5. Enter your **LLM API keys** (Anthropic for Claude Code, OpenAI for OpenCode)
-6. Click **Deploy**
+5. Click **Deploy**
 
 SSHCode will:
 - Create a Tailscale auth key
@@ -418,9 +407,8 @@ If you're using a separate Clerk production instance, update the issuer URL acco
 
 ## Security
 
-- **API keys encrypted at rest** — Hetzner, Tailscale, and GitHub tokens are encrypted using NaCl secretbox (XSalsa20-Poly1305) before being stored in Convex. Each encrypted value uses a unique random nonce.
+- **API keys encrypted at rest** — Hetzner and Tailscale tokens are encrypted using NaCl secretbox (XSalsa20-Poly1305) before being stored in Convex. Each encrypted value uses a unique random nonce.
 - **Encryption key isolation** — the master key is stored as a Convex environment variable, separate from the database.
-- **LLM keys not persisted** — Anthropic and OpenAI API keys are never saved in the database. They're passed during provisioning and written directly to the VM at `/home/sshcode/.env` with `chmod 600`.
 - **UFW firewall** — provisioned servers block all inbound traffic on agent ports from the public internet. Only Tailscale interface traffic is allowed.
 - **Settings are write-only** — the Settings page never displays stored API keys back to the user. You can only overwrite them.
 - **Tailscale VPN** — all access to servers goes through your private Tailscale network. Nothing is exposed to the public internet.

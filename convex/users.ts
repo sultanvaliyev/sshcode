@@ -94,45 +94,4 @@ export const updateKeys = mutation({
   },
 });
 
-export const connectGithub = mutation({
-  args: {
-    accessToken: v.string(),
-    username: v.string(),
-  },
-  handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Not authenticated");
 
-    const user = await ctx.db
-      .query("users")
-      .withIndex("by_clerkId", (q) => q.eq("clerkId", identity.subject))
-      .first();
-    if (!user) throw new Error("User not found");
-
-    await ctx.db.patch(user._id, {
-      githubAccessToken: encrypt(args.accessToken),
-      githubUsername: args.username,
-      githubConnectedAt: Date.now(),
-    });
-  },
-});
-
-export const disconnectGithub = mutation({
-  args: {},
-  handler: async (ctx) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Not authenticated");
-
-    const user = await ctx.db
-      .query("users")
-      .withIndex("by_clerkId", (q) => q.eq("clerkId", identity.subject))
-      .first();
-    if (!user) throw new Error("User not found");
-
-    await ctx.db.patch(user._id, {
-      githubAccessToken: undefined,
-      githubUsername: undefined,
-      githubConnectedAt: undefined,
-    });
-  },
-});

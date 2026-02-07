@@ -3,7 +3,6 @@
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@convex/_generated/api";
 import { useState, useEffect, Suspense } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
 
 function KeyStatus({ configured }: { configured: boolean }) {
   return configured ? (
@@ -25,18 +24,14 @@ export default function SettingsPage() {
 }
 
 function SettingsContent() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
   const user = useQuery(api.users.getCurrent);
   const updateKeys = useMutation(api.users.updateKeys);
-  const disconnectGithub = useMutation(api.users.disconnectGithub);
 
   const [hetznerApiKey, setHetznerApiKey] = useState("");
   const [tailscaleApiKey, setTailscaleApiKey] = useState("");
   const [tailscaleTailnet, setTailscaleTailnet] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [githubError, setGithubError] = useState<string | null>(null);
 
   // Only populate tailscaleTailnet (not a secret).
   // API keys are encrypted at rest — never sent back to the client.
@@ -45,23 +40,6 @@ function SettingsContent() {
       setTailscaleTailnet(user.tailscaleTailnet || "");
     }
   }, [user]);
-
-  // Handle GitHub OAuth callback (token is stored server-side in the callback route)
-  useEffect(() => {
-    const githubErr = searchParams.get("github_error");
-
-    if (githubErr) {
-      const messages: Record<string, string> = {
-        denied: "GitHub authorization was denied",
-        invalid_state: "Invalid OAuth state — please try again",
-        exchange_failed: "Failed to connect to GitHub — please try again",
-      };
-      setGithubError(messages[githubErr] || "GitHub connection failed");
-      router.replace("/dashboard/settings");
-    } else if (searchParams.get("github") === "connected") {
-      router.replace("/dashboard/settings");
-    }
-  }, [searchParams, router]);
 
   const savedKeys = [
     user?.hetznerApiKey,
@@ -113,61 +91,6 @@ function SettingsContent() {
           )}
         </div>
       )}
-
-      {/* GitHub Connection */}
-      <div className="bg-surface border border-border-subtle rounded-lg overflow-hidden mb-6">
-        <div className="px-5 py-3 border-b border-border-subtle flex items-center gap-2">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" className="text-muted-strong"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
-          <span className="font-mono text-xs text-muted-strong tracking-wide">GitHub</span>
-        </div>
-
-        <div className="p-5">
-          {githubError && (
-            <div className="mb-4 px-3 py-2 rounded border border-danger/20 bg-danger/5 font-mono text-xs text-danger">
-              {githubError}
-            </div>
-          )}
-
-          {user?.githubAccessToken ? (
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 bg-foreground/10 rounded-full flex items-center justify-center">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" className="text-foreground"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
-                </div>
-                <div>
-                  <p className="font-mono text-sm text-foreground">{user.githubUsername}</p>
-                  <p className="font-mono text-[10px] text-muted">
-                    Connected {user.githubConnectedAt ? new Date(user.githubConnectedAt).toLocaleDateString() : ""}
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={async () => {
-                  if (confirm("Disconnect GitHub? Servers will keep existing git credentials.")) {
-                    await disconnectGithub();
-                  }
-                }}
-                className="font-mono text-[11px] text-danger/70 hover:text-danger transition-colors"
-              >
-                Disconnect
-              </button>
-            </div>
-          ) : (
-            <div>
-              <p className="font-mono text-xs text-muted leading-relaxed mb-4">
-                Connect your GitHub account so your servers can clone your repos. One-click setup — git credentials are auto-configured on every server you deploy.
-              </p>
-              <a
-                href="/api/auth/github"
-                className="inline-flex items-center gap-2.5 font-mono text-xs font-semibold px-5 py-2.5 rounded border border-border-subtle bg-surface-raised hover:bg-foreground/10 text-foreground transition-all"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
-                Connect GitHub
-              </a>
-            </div>
-          )}
-        </div>
-      </div>
 
       {/* API Keys */}
       <div className="bg-surface border border-border-subtle rounded-lg overflow-hidden mb-6">
@@ -275,7 +198,6 @@ function SettingsContent() {
               "Add your Hetzner and Tailscale API keys above",
               <>Install Tailscale on your devices — <a href="https://tailscale.com/download" target="_blank" rel="noopener noreferrer" className="text-terminal/80 underline underline-offset-2 hover:text-terminal">tailscale.com/download</a></>,
               <>Add <code className="text-terminal/70 bg-terminal/5 px-1 py-0.5 rounded text-[10px]">tag:sshcode</code> to your Tailscale ACL — go to <a href="https://login.tailscale.com/admin/acls" target="_blank" rel="noopener noreferrer" className="text-terminal/80 underline underline-offset-2 hover:text-terminal">ACL settings</a> and add <code className="text-terminal/70 bg-terminal/5 px-1 py-0.5 rounded text-[10px]">{`"tagOwners": { "tag:sshcode": ["autogroup:admin"] }`}</code></>,
-              <>Connect GitHub above <span className="text-muted">(optional — enables git clone on servers)</span></>,
               "Deploy a server from the dashboard",
               "Access your coding environment via Tailscale",
             ].map((step, i) => (
